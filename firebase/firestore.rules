@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasRole(role) {
+      return signedIn() && myProfile().data.role == role;
+    }
+
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+
+      // Registrasi publik hanya boleh membuat profil miliknya sendiri sebagai warga.
+      allow create: if signedIn()
+                    && request.auth.uid == userId
+                    && request.resource.data.role == 'warga';
+
+      // Pengguna boleh memperbarui profil sendiri, tetapi tidak boleh mengganti role.
+      allow update: if signedIn() && (
+        (request.auth.uid == userId
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.email == resource.data.email)
+        || isAdmin()
+      );
+      allow delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow create: if hasRole('warga')
+                    && request.resource.data.ownerId == request.auth.uid
+                    && request.resource.data.status == 'Menunggu Verifikasi'
+                    && request.resource.data.technicianId == '';
+
+      allow read: if signedIn() && (
+        resource.data.ownerId == request.auth.uid
+        || resource.data.technicianId == request.auth.uid
+        || isAdmin()
+      );
+
+      // Admin mengelola verifikasi dan penugasan.
+      allow update: if isAdmin()
+                    || (hasRole('teknisi')
+                        && resource.data.technicianId == request.auth.uid
+                        && request.resource.data.technicianId == request.auth.uid
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                             .hasOnly(['status', 'updatedAt'])
+                        && request.resource.data.status in ['Menuju Lokasi', 'Selesai']);
+      allow delete: if false;
+    }
+  }
+}
